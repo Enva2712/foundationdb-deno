@@ -1,4 +1,4 @@
-import lib from "./dl.ts";
+import lib, {close} from "./dl.ts";
 import {
   checkFDBErr,
   encodeCString,
@@ -11,8 +11,10 @@ import { options } from "./options.ts";
 checkFDBErr(lib.fdb_select_api_version_impl(710, 710));
 checkFDBErr(lib.fdb_setup_network());
 const netthread = lib.fdb_run_network().then(checkFDBErr);
-Deno.addSignalListener("SIGINT", () => {
+
+globalThis.addEventListener('unload', () => {
   checkFDBErr(lib.fdb_stop_network());
+  close();
   netthread.catch((e) =>
     console.error("FoundationDB network thread exited with error: ", e)
   );

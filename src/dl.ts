@@ -205,3 +205,4 @@ const header = {
 
 const lib: Deno.DynamicLibrary<typeof header> = Deno.dlopen(filename, header);
 export default lib.symbols;
+export const close = lib.close;
