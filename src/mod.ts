@@ -7,10 +7,8 @@ import {
 } from "./utils.ts";
 import { options } from "./options.ts";
 
-const HEADER_VERSION = 710;
-
 export function selectAPIVersion(apiVersion: number) {
-  checkFDBErr(lib.fdb_select_api_version_impl(apiVersion, HEADER_VERSION));
+  checkFDBErr(lib.fdb_select_api_version_impl(apiVersion, 710));
 }
 
 export async function startNetwork() {
@@ -36,10 +34,8 @@ export class Database {
   constructor(public ptr: NonNullable<Deno.PointerValue>) {
     dbReg.register(this, ptr);
   }
-
   createTransaction = () => new Transaction(this);
   openTenant = (name: string) => new Tenant(this, name);
-
   setOption(
     option: keyof typeof options.NetworkOption,
     value?: number | string,
@@ -93,7 +89,6 @@ export class Tenant {
     this.ptr = me.get();
     tenantreg.register(this, this.ptr);
   }
-
   createTransaction = () => new Transaction(this);
 }
 
@@ -102,16 +97,14 @@ export class Transaction {
   private ptr: NonNullable<Deno.PointerValue>;
   constructor(wrap: Database | Tenant) {
     const me = new PointerContainer();
-    if (wrap instanceof Database) {
-      checkFDBErr(lib.fdb_database_create_transaction(wrap.ptr, me.use()));
-    } else {
-      checkFDBErr(lib.fdb_tenant_create_transaction(wrap.ptr, me.use()));
-    }
-
+    checkFDBErr(
+      (wrap instanceof Database
+        ? lib.fdb_database_create_transaction
+        : lib.fdb_tenant_create_transaction)(wrap.ptr, me.use()),
+    );
     this.ptr = me.get();
     txreg.register(this, this.ptr);
   }
-
   get = (key: string, snapshot = 0) =>
     wrapFuture(lib.fdb_transaction_get(
       this.ptr,
@@ -119,7 +112,6 @@ export class Transaction {
       key.length,
       snapshot,
     ));
-
   set = (key: string, value: ArrayBuffer) =>
     lib.fdb_transaction_set(
       this.ptr,
@@ -128,13 +120,11 @@ export class Transaction {
       Deno.UnsafePointer.of(value),
       value.byteLength,
     );
-
   clear = (key: string) =>
     lib.fdb_transaction_clear(
       this.ptr,
       encodeCString(key),
       key.length,
     );
-
   commit = () => wrapFuture(lib.fdb_transaction_commit(this.ptr));
 }
