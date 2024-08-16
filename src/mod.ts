@@ -8,34 +8,21 @@ import {
 } from "./utils.ts";
 import { options } from "./options.ts";
 
-/**
- * https://apple.github.io/foundationdb/api-c.html#c.fdb_select_api_version
- * Min supported version: 710
- */
-export function selectAPIVersion(apiVersion: number) {
-  checkFDBErr(lib.fdb_select_api_version_impl(apiVersion, 710));
-}
-
-/**
- * Configures and spawns fdb networking thread. Resolves when thread completes due to stopNetwork being called
- */
-export async function startNetwork() {
-  checkFDBErr(lib.fdb_setup_network());
-  checkFDBErr(await lib.fdb_run_network());
-}
-
-/**
- * https://apple.github.io/foundationdb/api-c.html#c.fdb_stop_network
- */
-export function stopNetwork() {
+checkFDBErr(lib.fdb_select_api_version_impl(710, 710));
+checkFDBErr(lib.fdb_setup_network());
+const netthread = lib.fdb_run_network().then(checkFDBErr);
+Deno.addSignalListener("SIGINT", () => {
   checkFDBErr(lib.fdb_stop_network());
-}
+  netthread.catch((e) =>
+    console.error("FoundationDB network thread exited with error: ", e)
+  );
+});
 
 const dbReg = new FinalizationRegistry(lib.fdb_database_destroy);
 /**
  * See [Database](https://apple.github.io/foundationdb/api-c.html#database) in the FDB client API docs
  */
-export class FDB {
+export default class FDB {
   ptr: Deno.PointerObject;
   constructor(clusterFile?: string) {
     const me = new PointerContainer();
