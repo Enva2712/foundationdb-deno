@@ -164,14 +164,15 @@ const watchreg = new FinalizationRegistry(freeFuture);
 /**
  * https://apple.github.io/foundationdb/api-c.html#c.fdb_transaction_watch
  */
-export class Watch implements AsyncIterator<ArrayBuffer> {
-  future: Deno.PointerObject;
+export class Watch implements AsyncIterableIterator<ArrayBuffer> {
+  ptr: Deno.PointerObject;
   constructor(tx: Transaction, key: string) {
     const f = lib.fdb_transaction_watch(tx.ptr, encodeCString(key), key.length);
     if (f === null) throw new Error("nullptr");
-    watchreg.register(this, this.future = f);
+    watchreg.register(this, this.ptr = f);
   }
+  [Symbol.asyncIterator] = () => this;
   async next(): Promise<IteratorResult<ArrayBuffer>> {
-    return { value: await wrapFuture(this.future, true) };
+    return { value: await wrapFuture(this.ptr, true) };
   }
 }
