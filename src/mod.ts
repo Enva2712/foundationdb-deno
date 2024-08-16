@@ -1,4 +1,4 @@
-import lib, {close} from "./dl.ts";
+import lib, { close } from "./dl.ts";
 import {
   checkFDBErr,
   encodeCString,
@@ -12,13 +12,14 @@ checkFDBErr(lib.fdb_select_api_version_impl(710, 710));
 checkFDBErr(lib.fdb_setup_network());
 const netthread = lib.fdb_run_network().then(checkFDBErr);
 
-globalThis.addEventListener('unload', () => {
+/**
+ * cleanup will stop the foundationdb networking thread and call dlclose on the shared object
+ */
+export async function cleanup() {
   checkFDBErr(lib.fdb_stop_network());
+  await netthread;
   close();
-  netthread.catch((e) =>
-    console.error("FoundationDB network thread exited with error: ", e)
-  );
-});
+}
 
 const dbReg = new FinalizationRegistry(lib.fdb_database_destroy);
 /**
