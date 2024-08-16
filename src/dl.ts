@@ -1,4 +1,4 @@
-let filename = Deno.env.get("LIBFDB_C");
+let filename: string | undefined = Deno.env.get("LIBFDB_C");
 if (!filename) {
   if (Deno.build.os == "darwin") {
     filename = "/usr/local/lib/libfdb_c.dylib";
@@ -11,7 +11,7 @@ if (!filename) {
   }
 }
 
-export const { symbols: lib } = Deno.dlopen(filename, {
+const header = {
   fdb_select_api_version_impl: { parameters: ["i32", "i32"], result: "i32" },
   fdb_get_error: { parameters: ["i32"], result: "buffer" },
   fdb_error_predicate: { parameters: ["i32", "i32"], result: "i32" },
@@ -201,4 +201,7 @@ export const { symbols: lib } = Deno.dlopen(filename, {
     parameters: ["pointer"],
     result: "pointer",
   },
-});
+} as const;
+
+const lib: Deno.DynamicLibrary<typeof header> = Deno.dlopen(filename, header);
+export default lib.symbols;

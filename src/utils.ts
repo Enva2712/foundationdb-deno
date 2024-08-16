@@ -1,4 +1,4 @@
-import { lib } from "./lib.ts";
+import lib from "./dl.ts";
 
 export class FDBError extends Error {
   constructor(code: number) {
@@ -17,7 +17,7 @@ export function checkFDBErr(code: number) {
   }
 }
 
-export function encodeCString(string: string) {
+export function encodeCString(string: string): Uint8Array {
   return new TextEncoder().encode(`${string}\0`);
 }
 

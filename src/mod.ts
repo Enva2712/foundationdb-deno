@@ -1,4 +1,4 @@
-import { lib } from "./lib.ts";
+import lib from "./dl.ts";
 import {
   checkFDBErr,
   encodeCString,
@@ -20,22 +20,20 @@ export function stopNetwork() {
   checkFDBErr(lib.fdb_stop_network());
 }
 
-export function createDatabase(clusterFile: string | null = null) {
-  const container = new PointerContainer();
-  checkFDBErr(lib.fdb_create_database(
-    clusterFile == null ? clusterFile : encodeCString(clusterFile),
-    container.use(),
-  ));
-  return new Database(container.get());
-}
-
 const dbReg = new FinalizationRegistry(lib.fdb_database_destroy);
-export class Database {
-  constructor(public ptr: NonNullable<Deno.PointerValue>) {
-    dbReg.register(this, ptr);
+export class FDB {
+  public ptr: Deno.PointerObject;
+  constructor(clusterFile?: string) {
+    const me = new PointerContainer();
+    checkFDBErr(lib.fdb_create_database(
+      clusterFile ? encodeCString(clusterFile) : null,
+      me.use(),
+    ));
+    this.ptr = me.get();
+    dbReg.register(this, this.ptr);
   }
-  createTransaction = () => new Transaction(this);
-  openTenant = (name: string) => new Tenant(this, name);
+  createTransaction = (): Transaction => new Transaction(this);
+  openTenant = (name: string): Tenant => new Tenant(this, name);
   setOption(
     option: keyof typeof options.NetworkOption,
     value?: number | string,
@@ -77,8 +75,8 @@ export class Database {
 
 const tenantreg = new FinalizationRegistry(lib.fdb_tenant_destroy);
 export class Tenant {
-  public ptr: NonNullable<Deno.PointerValue>;
-  constructor(db: Database, name: string) {
+  public ptr: Deno.PointerObject;
+  constructor(db: FDB, name: string) {
     const me = new PointerContainer();
     checkFDBErr(lib.fdb_database_open_tenant(
       db.ptr,
@@ -89,30 +87,30 @@ export class Tenant {
     this.ptr = me.get();
     tenantreg.register(this, this.ptr);
   }
-  createTransaction = () => new Transaction(this);
+  createTransaction = (): Transaction => new Transaction(this);
 }
 
 const txreg = new FinalizationRegistry(lib.fdb_transaction_destroy);
 export class Transaction {
-  private ptr: NonNullable<Deno.PointerValue>;
-  constructor(wrap: Database | Tenant) {
+  private ptr: Deno.PointerObject;
+  constructor(wrap: FDB | Tenant) {
     const me = new PointerContainer();
     checkFDBErr(
-      (wrap instanceof Database
+      (wrap instanceof FDB
         ? lib.fdb_database_create_transaction
         : lib.fdb_tenant_create_transaction)(wrap.ptr, me.use()),
     );
     this.ptr = me.get();
     txreg.register(this, this.ptr);
   }
-  get = (key: string, snapshot = 0) =>
+  get = (key: string, snapshot = 0): Promise<ArrayBuffer> =>
     wrapFuture(lib.fdb_transaction_get(
       this.ptr,
       encodeCString(key),
       key.length,
       snapshot,
     ));
-  set = (key: string, value: ArrayBuffer) =>
+  set = (key: string, value: ArrayBuffer): void =>
     lib.fdb_transaction_set(
       this.ptr,
       encodeCString(key),
@@ -120,11 +118,12 @@ export class Transaction {
       Deno.UnsafePointer.of(value),
       value.byteLength,
     );
-  clear = (key: string) =>
+  clear = (key: string): void =>
     lib.fdb_transaction_clear(
       this.ptr,
       encodeCString(key),
       key.length,
     );
-  commit = () => wrapFuture(lib.fdb_transaction_commit(this.ptr));
+  commit = (): Promise<ArrayBuffer> =>
+    wrapFuture(lib.fdb_transaction_commit(this.ptr));
 }
