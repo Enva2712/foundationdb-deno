@@ -174,7 +174,7 @@ const header = {
     result: "void",
   },
   fdb_transaction_watch: {
-    parameters: ["pointer", "pointer", "i32"],
+    parameters: ["pointer", "buffer", "i32"],
     result: "pointer",
   },
   fdb_transaction_commit: {

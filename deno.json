@@ -1,6 +1,6 @@
 {
   "name": "@enva2712/fdb",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "exports": "./src/mod.ts",
   "lock": false,
   "tasks": {

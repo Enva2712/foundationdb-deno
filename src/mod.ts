@@ -2,6 +2,7 @@ import lib from "./dl.ts";
 import {
   checkFDBErr,
   encodeCString,
+  freeFuture,
   PointerContainer,
   wrapFuture,
 } from "./utils.ts";
@@ -35,7 +36,7 @@ const dbReg = new FinalizationRegistry(lib.fdb_database_destroy);
  * See [Database](https://apple.github.io/foundationdb/api-c.html#database) in the FDB client API docs
  */
 export class FDB {
-  public ptr: Deno.PointerObject;
+  ptr: Deno.PointerObject;
   constructor(clusterFile?: string) {
     const me = new PointerContainer();
     checkFDBErr(lib.fdb_create_database(
@@ -84,6 +85,12 @@ export class FDB {
       valueLength,
     ));
   }
+  async watch(key: string): Promise<Watch> {
+    const tx = this.createTransaction();
+    const w = new Watch(tx, key);
+    await tx.commit();
+    return w;
+  }
 }
 
 const tenantreg = new FinalizationRegistry(lib.fdb_tenant_destroy);
@@ -91,7 +98,7 @@ const tenantreg = new FinalizationRegistry(lib.fdb_tenant_destroy);
  * See [Tenant](https://apple.github.io/foundationdb/api-c.html#tenant) in the FDB client API docs
  */
 export class Tenant {
-  public ptr: Deno.PointerObject;
+  ptr: Deno.PointerObject;
   constructor(db: FDB, name: string) {
     const me = new PointerContainer();
     checkFDBErr(lib.fdb_database_open_tenant(
@@ -104,6 +111,12 @@ export class Tenant {
     tenantreg.register(this, this.ptr);
   }
   createTransaction = (): Transaction => new Transaction(this);
+  async watch(key: string): Promise<Watch> {
+    const tx = this.createTransaction();
+    const w = new Watch(tx, key);
+    await tx.commit();
+    return w;
+  }
 }
 
 const txreg = new FinalizationRegistry(lib.fdb_transaction_destroy);
@@ -111,7 +124,7 @@ const txreg = new FinalizationRegistry(lib.fdb_transaction_destroy);
  * See [Transaction](https://apple.github.io/foundationdb/api-c.html#transaction) in the FDB client API docs
  */
 export class Transaction {
-  private ptr: Deno.PointerObject;
+  ptr: Deno.PointerObject;
   constructor(wrap: FDB | Tenant) {
     const me = new PointerContainer();
     checkFDBErr(
@@ -145,4 +158,20 @@ export class Transaction {
     );
   commit = (): Promise<ArrayBuffer> =>
     wrapFuture(lib.fdb_transaction_commit(this.ptr));
+}
+
+const watchreg = new FinalizationRegistry(freeFuture);
+/**
+ * https://apple.github.io/foundationdb/api-c.html#c.fdb_transaction_watch
+ */
+export class Watch implements AsyncIterator<ArrayBuffer> {
+  future: Deno.PointerObject;
+  constructor(tx: Transaction, key: string) {
+    const f = lib.fdb_transaction_watch(tx.ptr, encodeCString(key), key.length);
+    if (f === null) throw new Error("nullptr");
+    watchreg.register(this, this.future = f);
+  }
+  async next(): Promise<IteratorResult<ArrayBuffer>> {
+    return { value: await wrapFuture(this.future, true) };
+  }
 }

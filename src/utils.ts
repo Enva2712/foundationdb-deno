@@ -31,7 +31,6 @@ export class PointerContainer {
   }
 }
 
-const futreg = new FinalizationRegistry(lib.fdb_future_destroy);
 type Cb<T> = (v: T) => void;
 const cbs = new Map<bigint, [res: Cb<ArrayBuffer>, rej: Cb<unknown>]>();
 const muxer = new Deno.UnsafeCallback(
@@ -40,7 +39,6 @@ const muxer = new Deno.UnsafeCallback(
     if (!fut) return;
     const k = Deno.UnsafePointer.value(fut);
     if (!cbs.has(k)) return;
-    muxer.unref();
     const [res, rej] = cbs.get(k)!;
     cbs.delete(k);
     let e = lib.fdb_future_get_error(fut);
@@ -74,13 +72,20 @@ const muxer = new Deno.UnsafeCallback(
   },
 );
 
+export function freeFuture(ptr: Deno.PointerValue) {
+  lib.fdb_future_destroy(ptr);
+  muxer.unref();
+}
+
+const futreg = new FinalizationRegistry(freeFuture);
 export function wrapFuture(
   ptr: Deno.PointerValue,
+  leakmemory = false,
 ): Promise<ArrayBuffer> {
   if (ptr === null) throw new Error("npe");
   let res: (b: ArrayBuffer) => void, rej: (err: unknown) => void;
   const p = new Promise<ArrayBuffer>((reso, reje) => (res = reso, rej = reje));
-  futreg.register(p, ptr);
+  if (!leakmemory) futreg.register(p, ptr);
 
   const e = lib.fdb_future_set_callback(ptr, muxer.pointer, null);
   if (e) rej!(new FDBError(e));
