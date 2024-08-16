@@ -7,20 +7,33 @@ import {
 } from "./utils.ts";
 import { options } from "./options.ts";
 
+/**
+ * https://apple.github.io/foundationdb/api-c.html#c.fdb_select_api_version
+ * Min supported version: 710
+ */
 export function selectAPIVersion(apiVersion: number) {
   checkFDBErr(lib.fdb_select_api_version_impl(apiVersion, 710));
 }
 
+/**
+ * Configures and spawns fdb networking thread. Resolves when thread completes due to stopNetwork being called
+ */
 export async function startNetwork() {
   checkFDBErr(lib.fdb_setup_network());
   checkFDBErr(await lib.fdb_run_network());
 }
 
+/**
+ * https://apple.github.io/foundationdb/api-c.html#c.fdb_stop_network
+ */
 export function stopNetwork() {
   checkFDBErr(lib.fdb_stop_network());
 }
 
 const dbReg = new FinalizationRegistry(lib.fdb_database_destroy);
+/**
+ * See [Database](https://apple.github.io/foundationdb/api-c.html#database) in the FDB client API docs
+ */
 export class FDB {
   public ptr: Deno.PointerObject;
   constructor(clusterFile?: string) {
@@ -74,6 +87,9 @@ export class FDB {
 }
 
 const tenantreg = new FinalizationRegistry(lib.fdb_tenant_destroy);
+/**
+ * See [Tenant](https://apple.github.io/foundationdb/api-c.html#tenant) in the FDB client API docs
+ */
 export class Tenant {
   public ptr: Deno.PointerObject;
   constructor(db: FDB, name: string) {
@@ -91,6 +107,9 @@ export class Tenant {
 }
 
 const txreg = new FinalizationRegistry(lib.fdb_transaction_destroy);
+/**
+ * See [Transaction](https://apple.github.io/foundationdb/api-c.html#transaction) in the FDB client API docs
+ */
 export class Transaction {
   private ptr: Deno.PointerObject;
   constructor(wrap: FDB | Tenant) {
