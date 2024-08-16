@@ -1,6 +1,6 @@
 # FoundationDB for Deno
 
-```ts
+```typescript
 import {
   createDatabase,
   selectAPIVersion,

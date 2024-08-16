@@ -166,7 +166,7 @@ export const { symbols: lib } = Deno.dlopen(filename, {
     result: "void",
   },
   fdb_transaction_clear: {
-    parameters: ["pointer", "pointer", "i32"],
+    parameters: ["pointer", "buffer", "i32"],
     result: "void",
   },
   fdb_transaction_clear_range: {
