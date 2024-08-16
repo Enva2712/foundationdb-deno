@@ -1,7 +1,6 @@
 # Deno FDB
-
 ```typescript
-import { selectAPIVersion, startNetwork, stopNetwork, FDB } from "https://deno.land/x/fdb/mod.ts";
+import { selectAPIVersion, startNetwork, stopNetwork, FDB } from "jsr:@enva2712/fdb";
 selectAPIVersion(710);
 startNetwork();
 const db = new FDB();
