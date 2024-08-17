@@ -2,9 +2,10 @@ import lib, { close } from "./dl.ts";
 import {
   checkFDBErr,
   encodeCString,
-  freeFuture,
-  PointerContainer,
-  wrapFuture,
+  type FDBError,
+  Future,
+  nextFutureVal,
+  StarStar,
 } from "./utils.ts";
 import { options } from "./options.ts";
 
@@ -28,12 +29,12 @@ const dbReg = new FinalizationRegistry(lib.fdb_database_destroy);
 export default class FDB {
   ptr: Deno.PointerObject;
   constructor(clusterFile?: string) {
-    const me = new PointerContainer();
+    const me = new StarStar();
     checkFDBErr(lib.fdb_create_database(
       clusterFile ? encodeCString(clusterFile) : null,
-      me.use(),
+      me.ref(),
     ));
-    this.ptr = me.get();
+    this.ptr = me.deref();
     dbReg.register(this, this.ptr);
   }
   createTransaction = (): Transaction => new Transaction(this);
@@ -90,14 +91,14 @@ const tenantreg = new FinalizationRegistry(lib.fdb_tenant_destroy);
 export class Tenant {
   ptr: Deno.PointerObject;
   constructor(db: FDB, name: string) {
-    const me = new PointerContainer();
+    const me = new StarStar();
     checkFDBErr(lib.fdb_database_open_tenant(
       db.ptr,
       encodeCString(name),
       name.length,
-      me.use(),
+      me.ref(),
     ));
-    this.ptr = me.get();
+    this.ptr = me.deref();
     tenantreg.register(this, this.ptr);
   }
   createTransaction = (): Transaction => new Transaction(this);
@@ -116,17 +117,17 @@ const txreg = new FinalizationRegistry(lib.fdb_transaction_destroy);
 export class Transaction {
   ptr: Deno.PointerObject;
   constructor(wrap: FDB | Tenant) {
-    const me = new PointerContainer();
+    const me = new StarStar();
     checkFDBErr(
       (wrap instanceof FDB
         ? lib.fdb_database_create_transaction
-        : lib.fdb_tenant_create_transaction)(wrap.ptr, me.use()),
+        : lib.fdb_tenant_create_transaction)(wrap.ptr, me.ref()),
     );
-    this.ptr = me.get();
+    this.ptr = me.deref();
     txreg.register(this, this.ptr);
   }
   get = (key: string, snapshot = 0): Promise<ArrayBuffer> =>
-    wrapFuture(lib.fdb_transaction_get(
+    nextFutureVal(lib.fdb_transaction_get(
       this.ptr,
       encodeCString(key),
       key.length,
@@ -147,22 +148,69 @@ export class Transaction {
       key.length,
     );
   commit = (): Promise<ArrayBuffer> =>
-    wrapFuture(lib.fdb_transaction_commit(this.ptr));
+    nextFutureVal(lib.fdb_transaction_commit(this.ptr));
 }
 
-const watchreg = new FinalizationRegistry(freeFuture);
+class AsynQ<
+  T extends NonNullable<unknown>,
+  E extends NonNullable<unknown> = NonNullable<unknown>,
+> {
+  private done = false;
+  private e: E | null = null;
+  private q: T[] = [];
+  private ls: [res: (v: T | null) => void, rej: (e: E) => void][] = [];
+  push(v: T) {
+    if (this.done) return;
+    const l = this.ls.shift();
+    if (l) l[0](v);
+    else this.q.push(v);
+  }
+  err(e: E) {
+    this.done = true;
+    this.ls.forEach(([, rej]) => rej(e));
+    this.ls.length = 0;
+  }
+  complete() {
+    this.done = true;
+    this.ls.forEach(([res]) => res(null));
+    this.ls.length = 0;
+  }
+  pull(): Promise<T | null> {
+    if (this.e) return Promise.reject(this.e);
+    if (this.done) return Promise.resolve(null);
+    const next = this.q.shift();
+    if (next) return Promise.resolve(next);
+    return new Promise((res, rej) => {
+      this.ls.push([res, rej]);
+    });
+  }
+}
+
 /**
  * https://apple.github.io/foundationdb/api-c.html#c.fdb_transaction_watch
  */
-export class Watch implements AsyncIterableIterator<ArrayBuffer> {
-  ptr: Deno.PointerObject;
+export class Watch extends Future
+  implements AsyncIterableIterator<ArrayBuffer> {
+  private q: AsynQ<ArrayBuffer, FDBError>;
   constructor(tx: Transaction, key: string) {
-    const f = lib.fdb_transaction_watch(tx.ptr, encodeCString(key), key.length);
-    if (f === null) throw new Error("nullptr");
-    watchreg.register(this, this.ptr = f);
+    const f = lib.fdb_transaction_watch(
+      tx.ptr,
+      encodeCString(key),
+      key.length,
+    )!;
+    const q = new AsynQ<ArrayBuffer, FDBError>();
+    super(f, q.push.bind(q), q.err.bind(q));
+    this.q = q;
   }
   [Symbol.asyncIterator] = () => this;
   async next(): Promise<IteratorResult<ArrayBuffer>> {
-    return { value: await wrapFuture(this.ptr, true) };
+    const value = await this.q.pull();
+    if (value) return { done: false, value };
+    else return { done: true, value: null };
+  }
+
+  dispose() {
+    this.q.complete();
+    super.dispose();
   }
 }
