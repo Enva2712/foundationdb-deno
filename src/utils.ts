@@ -45,7 +45,7 @@ const muxer = new Deno.UnsafeCallback(
     if (!ptr) return;
     const f = futures.get(ptr);
     if (f) f[wakeFuture]();
-    else {console.warn(
+    else {console.error(
         "FDB tried to wake untracked future. This is a bug in the deno fdb bindings",
       );}
   },
@@ -57,6 +57,7 @@ export class Future {
     private onChange: (this: Future, value: ArrayBuffer) => void,
     private onError: (this: Future, error: FDBError) => void,
   ) {
+    futures.set(ptr, this);
     futreg.register(this, ptr);
     const e = lib.fdb_future_set_callback(ptr, muxer.pointer, null);
     if (e) throw new FDBError(e);
