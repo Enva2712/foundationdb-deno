@@ -1,26 +1,17 @@
-import lib, { close } from "./dl.ts";
-import {
+import lib, {
   checkFDBErr,
+  close,
   encodeCString,
-  type FDBError,
   Future,
   nextFutureVal,
   StarStar,
-} from "./utils.ts";
+} from "./dl.ts";
 import { options } from "./options.ts";
-
-checkFDBErr(lib.fdb_select_api_version_impl(710, 710));
-checkFDBErr(lib.fdb_setup_network());
-const netthread = lib.fdb_run_network().then(checkFDBErr);
 
 /**
  * cleanup will stop the foundationdb networking thread and call dlclose on the shared object
  */
-export async function cleanup() {
-  checkFDBErr(lib.fdb_stop_network());
-  await netthread;
-  close();
-}
+export const cleanup = close;
 
 const dbReg = new FinalizationRegistry(lib.fdb_database_destroy);
 /**
@@ -30,10 +21,12 @@ export default class FDB {
   ptr: Deno.PointerObject;
   constructor(clusterFile?: string) {
     const me = new StarStar();
-    checkFDBErr(lib.fdb_create_database(
-      clusterFile ? encodeCString(clusterFile) : null,
-      me.ref(),
-    ));
+    checkFDBErr(
+      lib.fdb_create_database(
+        clusterFile ? encodeCString(clusterFile) : null,
+        me.ref(),
+      ),
+    );
     this.ptr = me.deref();
     dbReg.register(this, this.ptr);
   }
@@ -69,12 +62,14 @@ export default class FDB {
       valuePointer = Deno.UnsafePointer.of(stringBuffer);
       valueLength = stringBuffer.length;
     }
-    checkFDBErr(lib.fdb_database_set_option(
-      this.ptr,
-      optionId,
-      valuePointer,
-      valueLength,
-    ));
+    checkFDBErr(
+      lib.fdb_database_set_option(
+        this.ptr,
+        optionId,
+        valuePointer,
+        valueLength,
+      ),
+    );
   }
   async watch(key: string): Promise<Watch> {
     const tx = this.createTransaction();
@@ -92,12 +87,14 @@ export class Tenant {
   ptr: Deno.PointerObject;
   constructor(db: FDB, name: string) {
     const me = new StarStar();
-    checkFDBErr(lib.fdb_database_open_tenant(
-      db.ptr,
-      encodeCString(name),
-      name.length,
-      me.ref(),
-    ));
+    checkFDBErr(
+      lib.fdb_database_open_tenant(
+        db.ptr,
+        encodeCString(name),
+        name.length,
+        me.ref(),
+      ),
+    );
     this.ptr = me.deref();
     tenantreg.register(this, this.ptr);
   }
@@ -126,57 +123,59 @@ export class Transaction {
     this.ptr = me.deref();
     txreg.register(this, this.ptr);
   }
-  get = (key: string, snapshot = 0): Promise<ArrayBuffer> =>
-    nextFutureVal(lib.fdb_transaction_get(
-      this.ptr,
-      encodeCString(key),
-      key.length,
-      snapshot,
-    ));
-  set = (key: string, value: ArrayBuffer): void =>
-    lib.fdb_transaction_set(
+  get(key: string, snapshot = 0): Promise<ArrayBuffer | null> {
+    return nextFutureVal(
+      lib.fdb_transaction_get(
+        this.ptr,
+        encodeCString(key),
+        key.length,
+        snapshot,
+      ),
+    );
+  }
+  set(key: string, value: ArrayBuffer): void {
+    return lib.fdb_transaction_set(
       this.ptr,
       encodeCString(key),
       key.length,
       Deno.UnsafePointer.of(value),
       value.byteLength,
     );
-  clear = (key: string): void =>
-    lib.fdb_transaction_clear(
-      this.ptr,
-      encodeCString(key),
-      key.length,
-    );
-  commit = (): Promise<ArrayBuffer> =>
-    nextFutureVal(lib.fdb_transaction_commit(this.ptr));
+  }
+  clear(key: string): void {
+    return lib.fdb_transaction_clear(this.ptr, encodeCString(key), key.length);
+  }
+  commit(): Promise<ArrayBuffer | null> {
+    return nextFutureVal(lib.fdb_transaction_commit(this.ptr));
+  }
 }
 
-class AsynQ<
-  T extends NonNullable<unknown>,
-  E extends NonNullable<unknown> = NonNullable<unknown>,
-> {
+const NONE = Symbol("NONE");
+class AsynQ<T> {
   private done = false;
-  private e: E | null = null;
+  private e: unknown | typeof NONE = NONE;
   private q: T[] = [];
-  private ls: [res: (v: T | null) => void, rej: (e: E) => void][] = [];
+  private ls: [res: (v: T) => void, rej: (e: unknown) => void][] = [];
   push(v: T) {
     if (this.done) return;
     const l = this.ls.shift();
     if (l) l[0](v);
     else this.q.push(v);
   }
-  err(e: E) {
+  err(e: unknown) {
     this.done = true;
     this.ls.forEach(([, rej]) => rej(e));
     this.ls.length = 0;
   }
   complete() {
     this.done = true;
-    this.ls.forEach(([res]) => res(null));
+    this.ls.forEach(([, rej]) =>
+      rej(new Error("AsynQ completed before value could be pulled"))
+    );
     this.ls.length = 0;
   }
   pull(): Promise<T | null> {
-    if (this.e) return Promise.reject(this.e);
+    if (this.e !== NONE) return Promise.reject(this.e);
     if (this.done) return Promise.resolve(null);
     const next = this.q.shift();
     if (next) return Promise.resolve(next);
@@ -191,15 +190,15 @@ class AsynQ<
  */
 export class Watch extends Future
   implements AsyncIterableIterator<ArrayBuffer> {
-  private q: AsynQ<ArrayBuffer, FDBError>;
+  private q: AsynQ<ArrayBuffer>;
   constructor(tx: Transaction, key: string) {
     const f = lib.fdb_transaction_watch(
       tx.ptr,
       encodeCString(key),
       key.length,
     )!;
-    const q = new AsynQ<ArrayBuffer, FDBError>();
-    super(f, q.push.bind(q), q.err.bind(q));
+    const q = new AsynQ<ArrayBuffer>();
+    super(f, (v) => v && q.push(v), q.err.bind(q));
     this.q = q;
   }
   [Symbol.asyncIterator] = () => this;
