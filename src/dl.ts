@@ -237,22 +237,25 @@ export class StarStar {
 
 const futures = new Map<bigint, Future>();
 const wakeFuture = Symbol("wakeFuture");
-const muxer = new Deno.UnsafeCallback(
+const sharedFutCb = new Deno.UnsafeCallback(
   { parameters: ["pointer", "pointer"], result: "void" },
   (ptr) => {
     if (!ptr) return;
     const f = futures.get(Deno.UnsafePointer.value(ptr));
     if (f) f[wakeFuture]();
-    else {console.error(
+    else {
+      console.error(
         "FDB tried to wake untracked future. This is a bug in the deno fdb bindings",
-      );}
+      );
+    }
   },
 );
 
 function freeFut(ptr: Deno.PointerObject) {
-  dl.symbols.fdb_future_destroy(ptr);
-  muxer.unref();
-  futures.delete(Deno.UnsafePointer.value(ptr));
+  if (futures.delete(Deno.UnsafePointer.value(ptr))) {
+    dl.symbols.fdb_future_destroy(ptr);
+    sharedFutCb.unref(); // TODO: is the callback ref dropped when fdb calls it? docs are a bit unclear - test
+  }
 }
 const futreg = new FinalizationRegistry(freeFut);
 export class Future {
@@ -261,11 +264,18 @@ export class Future {
     private onChange: (this: Future, value: ArrayBuffer | null) => void,
     private onError: (this: Future, error: FDBError) => void,
   ) {
-    const e = dl.symbols.fdb_future_set_callback(ptr, muxer.pointer, null);
-    if (e) throw new FDBError(e);
-    muxer.ref();
+    sharedFutCb.ref();
     futreg.register(this, this.ptr);
     futures.set(Deno.UnsafePointer.value(ptr), this);
+    const e = dl.symbols.fdb_future_set_callback(
+      ptr,
+      sharedFutCb.pointer,
+      null,
+    );
+    if (e) {
+      sharedFutCb.unref();
+      throw new FDBError(e);
+    }
   }
 
   dispose() {
