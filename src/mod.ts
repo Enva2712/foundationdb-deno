@@ -3,7 +3,6 @@ import lib, {
   close,
   encodeCString,
   Future,
-  nextFutureVal,
   StarStar,
 } from "./dl.ts";
 import { options } from "./options.ts";
@@ -71,11 +70,8 @@ export default class FDB {
       ),
     );
   }
-  async watch(key: string): Promise<Watch> {
-    const tx = this.createTransaction();
-    const w = new Watch(tx, key);
-    await tx.commit();
-    return w;
+  watch(key: string): Watch {
+    return new Watch(this, key);
   }
 }
 
@@ -99,11 +95,8 @@ export class Tenant {
     tenantreg.register(this, this.ptr);
   }
   createTransaction = (): Transaction => new Transaction(this);
-  async watch(key: string): Promise<Watch> {
-    const tx = this.createTransaction();
-    const w = new Watch(tx, key);
-    await tx.commit();
-    return w;
+  watch(key: string): Watch {
+    return new Watch(this, key);
   }
 }
 
@@ -123,15 +116,15 @@ export class Transaction {
     this.ptr = me.deref();
     txreg.register(this, this.ptr);
   }
-  get(key: string, snapshot = 0): Promise<ArrayBuffer | null> {
-    return nextFutureVal(
-      lib.fdb_transaction_get(
-        this.ptr,
-        encodeCString(key),
-        key.length,
-        snapshot,
-      ),
-    );
+  async get(key: string, snapshot = 0): Promise<ArrayBuffer | null> {
+    const f = new Future(lib.fdb_transaction_get(
+      this.ptr,
+      encodeCString(key),
+      key.length,
+      snapshot,
+    ));
+    await f.ready;
+    return f.value;
   }
   set(key: string, value: ArrayBuffer): void {
     return lib.fdb_transaction_set(
@@ -145,71 +138,33 @@ export class Transaction {
   clear(key: string): void {
     return lib.fdb_transaction_clear(this.ptr, encodeCString(key), key.length);
   }
-  commit(): Promise<ArrayBuffer | null> {
-    return nextFutureVal(lib.fdb_transaction_commit(this.ptr));
-  }
-}
-
-const NONE = Symbol("NONE");
-class AsynQ<T> {
-  private done = false;
-  private e: unknown | typeof NONE = NONE;
-  private q: T[] = [];
-  private ls: [res: (v: T) => void, rej: (e: unknown) => void][] = [];
-  push(v: T) {
-    if (this.done) return;
-    const l = this.ls.shift();
-    if (l) l[0](v);
-    else this.q.push(v);
-  }
-  err(e: unknown) {
-    this.done = true;
-    this.ls.forEach(([, rej]) => rej(e));
-    this.ls.length = 0;
-  }
-  complete() {
-    this.done = true;
-    this.ls.forEach(([, rej]) =>
-      rej(new Error("AsynQ completed before value could be pulled"))
-    );
-    this.ls.length = 0;
-  }
-  pull(): Promise<T | null> {
-    if (this.e !== NONE) return Promise.reject(this.e);
-    if (this.done) return Promise.resolve(null);
-    const next = this.q.shift();
-    if (next) return Promise.resolve(next);
-    return new Promise((res, rej) => {
-      this.ls.push([res, rej]);
-    });
+  async commit() {
+    const f = new Future(lib.fdb_transaction_commit(this.ptr));
+    await f.ready;
   }
 }
 
 /**
- * https://apple.github.io/foundationdb/api-c.html#c.fdb_transaction_watch
+ * https://apple.github.io/foundationdb/developer-guide.html#watches
  */
-export class Watch extends Future
-  implements AsyncIterableIterator<ArrayBuffer> {
-  private q: AsynQ<ArrayBuffer>;
-  constructor(tx: Transaction, key: string) {
-    const f = lib.fdb_transaction_watch(
-      tx.ptr,
-      encodeCString(key),
-      key.length,
-    )!;
-    const q = new AsynQ<ArrayBuffer>();
-    super(f, (v) => v && q.push(v), q.err.bind(q));
-    this.q = q;
-  }
+export class Watch implements AsyncIterableIterator<ArrayBuffer | null> {
+  private fut?: Future;
+  constructor(private parent: FDB | Tenant, public readonly key: string) {}
   [Symbol.asyncIterator] = () => this;
-  async next(): Promise<IteratorResult<ArrayBuffer>> {
-    const value = await this.q.pull();
-    if (value) return { done: false, value };
-    else return { done: true, value: null };
+  async next() {
+    if (this.fut) await this.fut.ready;
+    const tx = this.parent.createTransaction();
+    const value = await tx.get(this.key);
+    this.fut = new Future(lib.fdb_transaction_watch(
+      tx.ptr,
+      encodeCString(this.key),
+      this.key.length,
+    ));
+    await tx.commit();
+    return { value };
   }
 
   dispose() {
-    this.q.complete();
-    super.dispose();
+    this.fut?.dispose();
   }
 }

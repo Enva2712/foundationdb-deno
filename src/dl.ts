@@ -71,12 +71,7 @@ const dl = Deno.dlopen(filename, {
     result: "i32",
   },
   fdb_database_set_option: {
-    parameters: [
-      "pointer",
-      "i32",
-      "pointer",
-      "i32",
-    ],
+    parameters: ["pointer", "i32", "pointer", "i32"],
     result: "i32",
   },
   fdb_tenant_destroy: {
@@ -132,13 +127,7 @@ const dl = Deno.dlopen(filename, {
     result: "pointer",
   },
   fdb_transaction_get_estimated_range_size_bytes: {
-    parameters: [
-      "pointer",
-      "pointer",
-      "i32",
-      "pointer",
-      "i32",
-    ],
+    parameters: ["pointer", "pointer", "i32", "pointer", "i32"],
     result: "pointer",
   },
   fdb_transaction_get_range_split_points: {
@@ -204,6 +193,7 @@ const dl = Deno.dlopen(filename, {
 });
 export default dl.symbols;
 
+export class NPE extends Error {}
 export class FDBError extends Error {
   constructor(public code: number) {
     let message: string | undefined;
@@ -230,19 +220,32 @@ export class StarStar {
   ref = () => Deno.UnsafePointer.of(this.array);
   deref() {
     const ptr = Deno.UnsafePointer.create(this.array[0]);
-    if (ptr === null) throw new Error("nullref");
+    if (ptr === null) throw new NPE();
     return ptr;
   }
 }
 
+let e = dl.symbols.fdb_select_api_version_impl(710, 710);
+if (e !== 2201) checkFDBErr(e); // API version may be set only once
+e = dl.symbols.fdb_setup_network();
+if (e !== 2009) checkFDBErr(e); // Network can be configured only once
+const netthread = dl.symbols
+  .fdb_run_network()
+  .then((e) => (e !== 2025 ? checkFDBErr(e) : undefined));
+
+export async function close() {
+  checkFDBErr(dl.symbols.fdb_stop_network());
+  await netthread;
+  dl.close();
+}
+
 const futures = new Map<bigint, Future>();
-const wakeFuture = Symbol("wakeFuture");
 const sharedFutCb = new Deno.UnsafeCallback(
   { parameters: ["pointer", "pointer"], result: "void" },
   (ptr) => {
     if (!ptr) return;
     const f = futures.get(Deno.UnsafePointer.value(ptr));
-    if (f) f[wakeFuture]();
+    if (f) f.poll();
     else {
       console.error(
         "FDB tried to wake untracked future. This is a bug in the deno fdb bindings",
@@ -255,18 +258,25 @@ function freeFut(ptr: Deno.PointerObject) {
   if (futures.delete(Deno.UnsafePointer.value(ptr))) {
     dl.symbols.fdb_future_destroy(ptr);
     sharedFutCb.unref(); // TODO: is the callback ref dropped when fdb calls it? docs are a bit unclear - test
-  }
+  } else console.error("bug in @enva2712/fdb: double free");
 }
 const futreg = new FinalizationRegistry(freeFut);
+const futureDependencies = new WeakMap<WeakKey, Future>();
 export class Future {
-  constructor(
-    private ptr: Deno.PointerObject,
-    private onChange: (this: Future, value: ArrayBuffer | null) => void,
-    private onError: (this: Future, error: FDBError) => void,
-  ) {
+  /** resolves when the future becomes ready. rejects if dispose is called before then */
+  ready: Promise<void>;
+  private dispatchReady: () => void;
+  private dispatchCancel: () => void;
+  constructor(private ptr: Deno.PointerValue) {
+    if (!ptr) throw new NPE();
     sharedFutCb.ref();
-    futreg.register(this, this.ptr);
+    futreg.register(this, ptr);
     futures.set(Deno.UnsafePointer.value(ptr), this);
+    [this.ready, this.dispatchReady, this.dispatchCancel] = (() => {
+      let res: () => void, rej: () => void;
+      const p = new Promise<void>((a, b) => ((res = a), (rej = b)));
+      return [p, res!, rej!];
+    })();
     const e = dl.symbols.fdb_future_set_callback(
       ptr,
       sharedFutCb.pointer,
@@ -278,68 +288,43 @@ export class Future {
     }
   }
 
-  dispose() {
-    freeFut(this.ptr);
-    futreg.unregister(this);
+  poll(): void {
+    if (dl.symbols.fdb_future_is_ready(this.ptr)) this.dispatchReady();
   }
 
-  [wakeFuture](): void {
-    if (!dl.symbols.fdb_future_is_ready(this.ptr)) return;
-    let e = dl.symbols.fdb_future_get_error(this.ptr);
-    if (e) return this.onError(new FDBError(e));
+  /** cleans up underlying memory. normally handled by GC but you can call before then to explicitly cleanup */
+  dispose() {
+    if (!this.ptr) return;
+    this.dispatchCancel();
+    freeFut(this.ptr);
+    futreg.unregister(this);
+    this.ptr = null;
+  }
+
+  get error() {
+    if (!this.ptr) throw new NPE();
+    const e = dl.symbols.fdb_future_get_error(this.ptr);
+    return e ? new FDBError(e) : null;
+  }
+
+  /** WARN: calling dispose will free the returned buffer. TODO: delay dispose (finalization registry on returned buf) */
+  get value() {
     const i32s = new Uint32Array(2);
     const outPresentPtr = Deno.UnsafePointer.of(i32s);
     const outLenPtr = Deno.UnsafePointer.of(i32s.subarray(1));
     const outPtr = new StarStar();
-    e = dl.symbols.fdb_future_get_value(
+    const e = dl.symbols.fdb_future_get_value(
       this.ptr,
       outPresentPtr,
       outPtr.ref(),
       outLenPtr,
     );
-    if (e) return this.onError(new FDBError(e));
+    if (e) throw new FDBError(e);
     const outPresent = i32s[0] !== 0;
     const outLen = i32s[1];
-    this.onChange(
-      outPresent
-        ? Deno.UnsafePointerView.getArrayBuffer(
-          outPtr.deref(),
-          outLen,
-        )
-        : null,
-    );
+    if (!outPresent) return null;
+    const b = Deno.UnsafePointerView.getArrayBuffer(outPtr.deref(), outLen);
+    futureDependencies.set(b, this); // this must live at least as long as b
+    return b;
   }
-}
-
-export function nextFutureVal(
-  ptr: Deno.PointerValue,
-) {
-  if (!ptr) return Promise.reject(new Error("nullptr"));
-  return new Promise<ArrayBuffer | null>((res, rej) =>
-    void new Future(
-      ptr,
-      function (v) {
-        res(v);
-        this.dispose();
-      },
-      function (e) {
-        rej(e);
-        this.dispose();
-      },
-    )
-  );
-}
-
-let e = dl.symbols.fdb_select_api_version_impl(710, 710);
-if (e !== 2201) checkFDBErr(e); // API version may be set only once
-e = dl.symbols.fdb_setup_network();
-if (e !== 2009) checkFDBErr(e); // Network can be configured only once
-const netthread = dl.symbols.fdb_run_network().then((e) =>
-  e !== 2025 ? checkFDBErr(e) : undefined
-);
-
-export async function close() {
-  checkFDBErr(dl.symbols.fdb_stop_network());
-  await netthread;
-  dl.close();
 }
