@@ -25,7 +25,7 @@ RUN dpkg -i /opt/fdb.deb
 
 ```typescript
 import FDB from "@enva2712/fdb";
-const db = new FDB("/optional/path/to/fdb.cluster"); // defaults to /etc/foundationdb/fdb.cluster
+const db = new FDB("/optional/path/to/fdb.cluster"); // path optional - see https://apple.github.io/foundationdb/administration.html#default-cluster-file
 const tx = db.createTransaction();
 const someval = await tx.get("foo");
 tx.set("bar", someval);
@@ -36,8 +36,7 @@ await tx.commit();
 
 ```typescript
 const db = new FDB();
-const watch = await db.watch("somekey");
-for await (const value of watch) {
+for await (const value of db.watch("somekey")) {
   doStuffWith(value);
 }
 ```
@@ -48,7 +47,7 @@ Normally watches are cleaned up when they get garbage collected; but if you want
 to explicitly close a watch before this you can call `dispose`
 
 ```typescript
-const watch = await db.watch("somekey");
+const watch = db.watch("somekey");
 setTimeout(() => watch.dispose(), 3000);
 for await (const val of watch) {
   doStuffWith(val);
