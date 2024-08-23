@@ -152,7 +152,10 @@ export class Watch implements AsyncIterableIterator<ArrayBuffer | null> {
   constructor(private parent: FDB | Tenant, public readonly key: string) {}
   [Symbol.asyncIterator] = () => this;
   async next(): Promise<IteratorResult<ArrayBuffer | null>> {
-    if (this.fut) await this.fut.ready;
+    if (this.fut) {
+      const done = await this.fut.ready.then(() => false, () => true);
+      if (done) return { done, value: null };
+    }
     const tx = this.parent.createTransaction();
     const value = await tx.get(this.key);
     this.fut = new Future(lib.fdb_transaction_watch(
