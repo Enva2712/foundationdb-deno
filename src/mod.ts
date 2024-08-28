@@ -27,7 +27,7 @@ export default class FDB {
       ),
     );
     this.ptr = me.deref();
-    dbReg.register(this, this.ptr);
+    dbReg.register(this, this.ptr, this);
   }
   createTransaction = (): Transaction => new Transaction(this);
   openTenant = (name: string): Tenant => new Tenant(this, name);

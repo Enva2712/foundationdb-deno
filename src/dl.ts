@@ -270,7 +270,7 @@ export class Future {
   constructor(private ptr: Deno.PointerValue) {
     if (!ptr) throw new NPE();
     sharedFutCb.ref();
-    futreg.register(this, ptr);
+    futreg.register(this, ptr, this);
     futures.set(Deno.UnsafePointer.value(ptr), this);
     [this.ready, this.dispatchReady, this.dispatchCancel] = (() => {
       let res: () => void, rej: () => void;
