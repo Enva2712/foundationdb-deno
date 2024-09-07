@@ -138,6 +138,17 @@ export class Transaction {
   clear(key: string): void {
     return lib.fdb_transaction_clear(this.ptr, encodeCString(key), key.length);
   }
+  watch(key: string, a?: AbortController): Promise<void> {
+    const f = new Future(lib.fdb_transaction_watch(
+      this.ptr,
+      encodeCString(key),
+      key.length,
+    ));
+    if (a) {
+      a.signal.addEventListener("abort", () => f.dispose());
+    }
+    return f.ready;
+  }
   async commit() {
     const f = new Future(lib.fdb_transaction_commit(this.ptr));
     await f.ready;
@@ -148,26 +159,24 @@ export class Transaction {
  * https://apple.github.io/foundationdb/developer-guide.html#watches
  */
 export class Watch implements AsyncIterableIterator<ArrayBuffer | null> {
-  private fut?: Future;
+  private chg?: Promise<void>;
+  private ac?: AbortController;
   constructor(private parent: FDB | Tenant, public readonly key: string) {}
   [Symbol.asyncIterator] = () => this;
   async next(): Promise<IteratorResult<ArrayBuffer | null>> {
-    if (this.fut) {
-      const done = await this.fut.ready.then(() => false, () => true);
+    if (this.chg) {
+      // TODO: throw errors but still return done on fut dispose
+      const done = await this.chg.then(() => false, () => true);
       if (done) return { done, value: null };
     }
     const tx = this.parent.createTransaction();
     const value = await tx.get(this.key);
-    this.fut = new Future(lib.fdb_transaction_watch(
-      tx.ptr,
-      encodeCString(this.key),
-      this.key.length,
-    ));
+    this.chg = tx.watch(this.key, this.ac = new AbortController());
     await tx.commit();
     return { value };
   }
 
   dispose() {
-    this.fut?.dispose();
+    this.ac?.abort();
   }
 }

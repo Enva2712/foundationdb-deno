@@ -248,7 +248,7 @@ const sharedFutCb = new Deno.UnsafeCallback(
     if (f) f.poll();
     else {
       console.error(
-        "FDB tried to wake untracked future. This is a bug in the deno fdb bindings",
+        "FDB wake after free. This is a bug in the deno fdb bindings",
       );
     }
   },
